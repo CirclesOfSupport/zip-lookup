@@ -3,7 +3,7 @@ import logging
 import os
 from urllib.parse import unquote
 
-from state_lookup import STATE_LOOKUP
+from state_lookup import STATE_LOOKUP, STATE_LOOKUP_5DIGIT
 from vamc_lookup import VAMC_LOOKUP
 
 __API_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
@@ -12,21 +12,28 @@ logging.basicConfig(level="DEBUG")
 
 app = Flask(__name__)
 
-logging.info(f"State lookup ready: {len(STATE_LOOKUP)} entries")
+logging.info(f"State lookup ready: {len(STATE_LOOKUP)} prefix entries, {len(STATE_LOOKUP_5DIGIT)} 5-digit overrides")
 logging.info(f"VAMC lookup ready: {len(VAMC_LOOKUP)} entries")
 
 
-def _extract_prefix(zipcode):
-    """Extract and validate 3-digit prefix from a zipcode string."""
+def _clean_zipcode(zipcode):
+    """Clean and normalize a zipcode string.
+
+    Returns:
+        tuple: (zip5, prefix) or (None, None) if invalid
+    """
     if not zipcode:
-        return None
+        return None, None
 
     clean = unquote(str(zipcode)).strip().replace("-", "")
 
     if len(clean) < 3 or not clean[:3].isdigit():
-        return None
+        return None, None
 
-    return clean[:3]
+    prefix = clean[:3]
+    zip5 = clean[:5] if len(clean) >= 5 and clean[:5].isdigit() else None
+
+    return zip5, prefix
 
 
 def _nearest_match(prefix, lookup):
@@ -47,8 +54,14 @@ def lookup_vamc(prefix):
     return _nearest_match(prefix, VAMC_LOOKUP)
 
 
-def lookup_state(prefix):
-    """Look up state from a 3-digit zip prefix."""
+def lookup_state(zip5, prefix):
+    """Look up state from a zipcode.
+
+    Tries 5-digit override first (for territories sharing a prefix),
+    then 3-digit exact match, then nearest prefix fallback.
+    """
+    if zip5 and zip5 in STATE_LOOKUP_5DIGIT:
+        return STATE_LOOKUP_5DIGIT[zip5]
     result = STATE_LOOKUP.get(prefix)
     if result:
         return result
@@ -70,7 +83,7 @@ def zip_lookup():
         request_json = request.get_json(silent=True) or {}
 
         zipcode = request_json.get("zipcode", "")
-        prefix = _extract_prefix(zipcode)
+        zip5, prefix = _clean_zipcode(zipcode)
 
         if not prefix:
             return jsonify({
@@ -81,7 +94,7 @@ def zip_lookup():
                 "message": "Invalid or missing zipcode",
             }), 200
 
-        state = lookup_state(prefix) or ""
+        state = lookup_state(zip5, prefix) or ""
         vamc = lookup_vamc(prefix) or ""
 
         return jsonify({
