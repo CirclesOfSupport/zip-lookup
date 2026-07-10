@@ -5,6 +5,7 @@ from urllib.parse import unquote
 
 from state_lookup import STATE_LOOKUP, STATE_LOOKUP_5DIGIT
 from vamc_lookup import VAMC_LOOKUP
+from county_lookup import AZ_COUNTY_LOOKUP
 
 __API_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 
@@ -14,6 +15,7 @@ app = Flask(__name__)
 
 logging.info(f"State lookup ready: {len(STATE_LOOKUP)} prefix entries, {len(STATE_LOOKUP_5DIGIT)} 5-digit overrides")
 logging.info(f"VAMC lookup ready: {len(VAMC_LOOKUP)} entries")
+logging.info(f"AZ county lookup ready: {len(AZ_COUNTY_LOOKUP)} entries")
 
 
 def _clean_zipcode(zipcode):
@@ -68,6 +70,18 @@ def lookup_state(zip5, prefix):
     return _nearest_match(prefix, STATE_LOOKUP)
 
 
+def lookup_county(zip5):
+    """Look up AZ county (ACMF dropdown value) from a full 5-digit zip.
+
+    County requires the full 5-digit zip (AZ zip prefixes span multiple
+    counties), unlike state/vamc which use the 3-digit prefix. Returns None
+    for non-AZ or unmapped zips (caller emits empty string).
+    """
+    if not zip5:
+        return None
+    return AZ_COUNTY_LOOKUP.get(zip5)
+
+
 @app.route("/", methods=["POST"])
 def zip_lookup():
     """Endpoint for TextIt webhook.
@@ -102,6 +116,38 @@ def zip_lookup():
             "state": state,
             "vamc_presumed": vamc,
             "zip_prefix": prefix,
+        }), 200
+
+    except Exception as ex:
+        logging.error(str(ex))
+        return jsonify({"status": "fail", "error": str(ex)}), 500
+
+
+@app.route("/county", methods=["POST"])
+def county_lookup():
+    """AZ ZIP -> county lookup for the ACMF Care Transition referral form.
+
+    Expects JSON body with 'zipcode'. Returns the county as the exact string
+    used in the ACMF form's county dropdown (e.g. 'Maricopa', 'Graham/Greenlee',
+    'LaPaz'). Non-AZ, unmapped, or invalid zips return an empty county string
+    with HTTP 200 (never an error) so the calling flow degrades gracefully.
+    """
+    try:
+        request_token = request.headers.get("token")
+        if __API_TOKEN and (not request_token or request_token != __API_TOKEN):
+            return jsonify({"status": "fail", "error": "Invalid token"}), 401
+
+        request_json = request.get_json(silent=True) or {}
+
+        zipcode = request_json.get("zipcode", "")
+        zip5, prefix = _clean_zipcode(zipcode)
+
+        county = lookup_county(zip5) or ""
+
+        return jsonify({
+            "status": "success",
+            "county": county,
+            "zipcode": zip5 or "",
         }), 200
 
     except Exception as ex:
