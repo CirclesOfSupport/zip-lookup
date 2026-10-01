@@ -3,7 +3,7 @@ import logging
 import os
 from urllib.parse import unquote
 
-from state_lookup import STATE_LOOKUP, STATE_LOOKUP_5DIGIT
+from state_lookup import STATE_BY_ZIP5, MILITARY_PREFIX
 from vamc_lookup import VAMC_LOOKUP
 from county_lookup import AZ_COUNTY_LOOKUP
 
@@ -13,7 +13,7 @@ logging.basicConfig(level="DEBUG")
 
 app = Flask(__name__)
 
-logging.info(f"State lookup ready: {len(STATE_LOOKUP)} prefix entries, {len(STATE_LOOKUP_5DIGIT)} 5-digit overrides")
+logging.info(f"State lookup ready: {len(STATE_BY_ZIP5)} five-digit zips")
 logging.info(f"VAMC lookup ready: {len(VAMC_LOOKUP)} entries")
 logging.info(f"AZ county lookup ready: {len(AZ_COUNTY_LOOKUP)} entries")
 
@@ -56,18 +56,19 @@ def lookup_vamc(prefix):
     return _nearest_match(prefix, VAMC_LOOKUP)
 
 
-def lookup_state(zip5, prefix):
-    """Look up state from a zipcode.
+def lookup_state(zip5):
+    """Look up state from a full five-digit zipcode.
 
-    Tries 5-digit override first (for territories sharing a prefix),
-    then 3-digit exact match, then nearest prefix fallback.
+    The zip must be a real zip in the table; anything else (a short zip,
+    a zip that lost its leading zero, an unknown zip) has no state. We never
+    guess a state from the first three digits: a damaged zip like 2809
+    (really 02809, Rhode Island) would read as prefix 280, North Carolina.
+    The one prefix rule is for military mail: a complete five-digit zip in a
+    military-only prefix (090-099, 340, 962-966) is AE, AA or AP.
     """
-    if zip5 and zip5 in STATE_LOOKUP_5DIGIT:
-        return STATE_LOOKUP_5DIGIT[zip5]
-    result = STATE_LOOKUP.get(prefix)
-    if result:
-        return result
-    return _nearest_match(prefix, STATE_LOOKUP)
+    if not zip5:
+        return None
+    return STATE_BY_ZIP5.get(zip5) or MILITARY_PREFIX.get(zip5[:3])
 
 
 def lookup_county(zip5):
@@ -108,7 +109,7 @@ def zip_lookup():
                 "message": "Invalid or missing zipcode",
             }), 200
 
-        state = lookup_state(zip5, prefix) or ""
+        state = lookup_state(zip5) or ""
         vamc = lookup_vamc(prefix) or ""
 
         return jsonify({
